@@ -48,6 +48,9 @@ jobs:
 
       - run: pnpm test
 
+      - name: Blob compatibility contracts and known gaps
+        run: pnpm --filter @emulators/vercel test:blob-contract
+
   custom-consumer:
     strategy:
       fail-fast: false
