@@ -1033,6 +1033,12 @@ Slack message text is limited to 40,000 Unicode characters across chat writes, i
 - `POST /api/search.messages` - search message text and block text in conversations the caller can read. Supports quoted phrases and the `in:`, `from:`, `before:`, `after:`, and `on:` modifiers, `sort` (`score` or `timestamp`), `sort_dir`, `count`, and `page`
 - `POST /api/search.all` - the `search.messages` results plus an empty `files` result, since files are not searched
 
+### User groups
+- `POST /api/usergroups.list` - list user groups (`include_users`, `include_count`, `include_disabled`)
+- `POST /api/usergroups.create` / `usergroups.update` - create a group or change its name, `handle`, description, and default `channels`
+- `POST /api/usergroups.disable` / `usergroups.enable` - disable or re-enable a group
+- `POST /api/usergroups.users.list` / `usergroups.users.update` - read or replace a group's members
+
 ### Files
 - `POST /api/files.getUploadURLExternal` - create a local external upload session
 - `POST /upload/v1/:fileId` - receive raw uploaded file bytes
@@ -1075,9 +1081,9 @@ Modal opens and pushes require values from `/api/views.generateTriggerId`. Pass 
 
 When a supported Slack write emits an `event_callback`, the payload contains the inner `event` plus outer `team_id`, `event_id`, and `event_time`. The team comes from the presented Slack token's installation; development tokens without a stored Slack record fall back to the affected channel, user, or file's team, then the seeded workspace team (or `T000000001`). Incoming webhook posts use their webhook record's team, or the target channel's team when no record matches. `event_time` is an integer Unix timestamp in seconds. Each logical event gets a new `event_id`, shared across deliveries to multiple subscribers.
 
-Slack scope checks are relaxed by default so local tests can use simple bearer tokens. Set `slack.strict_scopes: true` in seed config to make supported Web API methods return Slack-style `missing_scope` errors with `needed` and `provided` fields. Strict mode checks `chat:write`, `channels:read`, `channels:history`, `channels:join`, `channels:manage`, `channels:write`, `groups:read`, `groups:history`, `groups:write`, `im:read`, `im:history`, `im:write`, `mpim:read`, `mpim:history`, `mpim:write`, `users:read`, `users:read.email`, `users.profile:read`, `users.profile:write`, `users:write`, `files:read`, `files:write`, `pins:read`, `pins:write`, `bookmarks:read`, `bookmarks:write`, `reactions:read`, `reactions:write`, `search:read`, and `team:read`. Slack lists no method-specific scopes for `views.publish`, `views.open`, `views.update`, or `views.push`, so the emulator requires auth but does not add strict-scope checks for those methods.
+Slack scope checks are relaxed by default so local tests can use simple bearer tokens. Set `slack.strict_scopes: true` in seed config to make supported Web API methods return Slack-style `missing_scope` errors with `needed` and `provided` fields. Strict mode checks `chat:write`, `channels:read`, `channels:history`, `channels:join`, `channels:manage`, `channels:write`, `groups:read`, `groups:history`, `groups:write`, `im:read`, `im:history`, `im:write`, `mpim:read`, `mpim:history`, `mpim:write`, `users:read`, `users:read.email`, `users.profile:read`, `users.profile:write`, `users:write`, `files:read`, `files:write`, `pins:read`, `pins:write`, `bookmarks:read`, `bookmarks:write`, `reactions:read`, `reactions:write`, `search:read`, `team:read`, `usergroups:read`, and `usergroups:write`. Slack lists no method-specific scopes for `views.publish`, `views.open`, `views.update`, or `views.push`, so the emulator requires auth but does not add strict-scope checks for those methods.
 
-Current Slack limits: Slack Connect, Enterprise Grid admin APIs, Audit Logs API, SCIM, Legal Holds, Socket Mode, slash command and interaction simulation, user groups, reminders, stars, calls, canvases, lists, functions, workflows, chat streaming, legacy `files.upload`, exact rate limiting, and paid-plan behavior are not implemented.
+Current Slack limits: Slack Connect, Enterprise Grid admin APIs, Audit Logs API, SCIM, Legal Holds, Socket Mode, slash command and interaction simulation, reminders, stars, calls, canvases, lists, functions, workflows, chat streaming, legacy `files.upload`, exact rate limiting, and paid-plan behavior are not implemented.
 
 ## Linear API
 
