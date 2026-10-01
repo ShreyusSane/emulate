@@ -116,6 +116,8 @@ For GitHub App tests, inspect secret-free minted installation-token metadata at 
 |--------|-------------|
 | `url` | Base URL of the running server |
 | `reset()` | Wipe the store and replay seed data |
+| `snapshot()` | Return a JSON-compatible copy of the store and tokens, including tokens minted at run time. Webhook subscriptions are not included |
+| `restore(snapshot)` | Replace the current state with a snapshot from the same service |
 | `close()` | Shut down the HTTP server, returns a Promise |
 
 ## Vitest / Jest Setup
