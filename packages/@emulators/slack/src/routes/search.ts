@@ -9,21 +9,34 @@ const MAX_COUNT = 100;
 interface SearchQuery {
   terms: string[];
   inChannels: string[];
+  /** in:@name or in:<@U123>: the caller's DM with that user. */
+  inDmWith: string[];
   fromUsers: string[];
+  /** with:@name: DMs that include that user, and threads they took part in. */
+  withUsers: string[];
+  threadsOnly: boolean;
   after?: number;
   before?: number;
   on?: [number, number];
 }
 
 // Splits a Slack search query into free-text terms and the modifiers this
-// emulator supports: in:, from:, before:, after:, on:. Quoted phrases stay one
-// term. Unsupported modifiers are treated as plain text so a query never fails.
+// emulator supports: in:, from:, with:, is:thread, before:, after:, on:. Quoted
+// phrases stay one term. Unsupported modifiers are treated as plain text so a
+// query never fails.
 export function parseSlackSearchQuery(query: string): SearchQuery {
-  const parsed: SearchQuery = { terms: [], inChannels: [], fromUsers: [] };
+  const parsed: SearchQuery = {
+    terms: [],
+    inChannels: [],
+    inDmWith: [],
+    fromUsers: [],
+    withUsers: [],
+    threadsOnly: false,
+  };
   const tokens = query.match(/"[^"]*"|\S+/g) ?? [];
   for (const raw of tokens) {
     const token = raw.startsWith('"') && raw.endsWith('"') && raw.length >= 2 ? raw.slice(1, -1) : raw;
-    const modifier = /^(in|from|before|after|on):(.+)$/i.exec(token);
+    const modifier = /^(in|from|with|is|before|after|on):(.+)$/i.exec(token);
     if (!modifier || raw.startsWith('"')) {
       if (token.trim()) parsed.terms.push(token.toLowerCase());
       continue;
@@ -31,10 +44,18 @@ export function parseSlackSearchQuery(query: string): SearchQuery {
     const [, key, value] = modifier;
     switch (key.toLowerCase()) {
       case "in":
-        parsed.inChannels.push(stripReference(value, "#"));
+        if (value.startsWith("@") || value.startsWith("<@")) parsed.inDmWith.push(stripReference(value, "@"));
+        else parsed.inChannels.push(stripReference(value, "#"));
         break;
       case "from":
         parsed.fromUsers.push(stripReference(value, "@"));
+        break;
+      case "with":
+        parsed.withUsers.push(stripReference(value, "@"));
+        break;
+      case "is":
+        if (value.toLowerCase() === "thread") parsed.threadsOnly = true;
+        else parsed.terms.push(token.toLowerCase());
         break;
       case "after":
       case "before":
@@ -144,6 +165,28 @@ export function searchRoutes(ctx: RouteContext): void {
         users.filter((u) => u.user_id === value || u.name.toLowerCase() === value.toLowerCase()).map((u) => u.user_id),
       );
     const fromIds = parsed.fromUsers.map(userIdsFor);
+    const withIds = parsed.withUsers.map(userIdsFor);
+    const isDirect = (ch: SlackChannel) => Boolean(ch.is_im || ch.is_mpim);
+    const hasMember = (ch: SlackChannel, ids: Set<string>) => ch.members.some((member) => ids.has(member));
+    // Each in:@user resolves to the caller's one-to-one DM with that user.
+    const dmIds = parsed.inDmWith.map((value) => {
+      const ids = userIdsFor(value);
+      return new Set(
+        [...channels.values()]
+          .filter((ch) => ch.is_im && hasMember(ch, ids) && isMember(ch, authSlackUser, authUserId))
+          .map((ch) => ch.channel_id),
+      );
+    });
+    // A message is in a thread when it is a reply or a parent with replies; the
+    // parent carries reply_count but no thread_ts. Threads are keyed by channel
+    // and parent ts.
+    const allMessages = ss().messages.all();
+    const threadOf = (msg: SlackMessage) => msg.thread_ts ?? (msg.reply_count > 0 ? msg.ts : undefined);
+    const threadKey = (msg: SlackMessage) => `${msg.channel_id}:${threadOf(msg)}`;
+    // Threads each with:@user took part in.
+    const threadsWith = withIds.map(
+      (ids) => new Set(allMessages.filter((m) => threadOf(m) && ids.has(m.user)).map(threadKey)),
+    );
     const inChannelIds = parsed.inChannels.map(
       (value) =>
         new Set(
@@ -153,8 +196,7 @@ export function searchRoutes(ctx: RouteContext): void {
         ),
     );
 
-    const matches = ss()
-      .messages.all()
+    const matches = allMessages
       .filter((msg) => {
         const ch = channels.get(msg.channel_id);
         if (!ch) return false;
@@ -162,7 +204,13 @@ export function searchRoutes(ctx: RouteContext): void {
           if (!isMember(ch, authSlackUser, authUserId)) return false;
         }
         if (inChannelIds.some((ids) => !ids.has(msg.channel_id))) return false;
+        if (dmIds.some((ids) => !ids.has(msg.channel_id))) return false;
         if (fromIds.some((ids) => !ids.has(msg.user))) return false;
+        if (parsed.threadsOnly && !threadOf(msg)) return false;
+        const inWith = (ids: Set<string>, index: number) =>
+          (isDirect(ch) && hasMember(ch, ids)) ||
+          (threadOf(msg) !== undefined && threadsWith[index].has(threadKey(msg)));
+        if (withIds.some((ids, index) => !inWith(ids, index))) return false;
         const at = tsMillis(msg.ts);
         if (parsed.after !== undefined && at < parsed.after) return false;
         if (parsed.before !== undefined && at >= parsed.before) return false;
