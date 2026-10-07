@@ -190,12 +190,80 @@ describe("Slack plugin - search.messages and search.all", () => {
   });
 });
 
+describe("Slack plugin - search in DMs and threads", () => {
+  let app: SlackTestApp["app"];
+  let store: Store;
+  let tokenMap: SlackTestApp["tokenMap"];
+
+  beforeEach(() => {
+    ({ app, store, tokenMap } = createSlackTestApp());
+    addOtherUser(store, tokenMap);
+  });
+
+  async function dmWithCarol() {
+    const opened = await call(app, "conversations.open", { users: "U000000001" }, OTHER_TOKEN);
+    await call(app, "chat.postMessage", { channel: opened.channel.id, text: "invoice copy for globex" }, OTHER_TOKEN);
+    return opened.channel.id as string;
+  }
+
+  it("in:@user and in:<@U> search the caller's DM with that user", async () => {
+    const dm = await dmWithCarol();
+    await call(app, "chat.postMessage", { channel: "C000000001", text: "globex invoice in general" });
+
+    for (const query of ["globex in:@carol", "globex in:<@U000000002>"]) {
+      const body = await call(app, "search.messages", { query });
+      expect(body.messages.matches.map((m: any) => m.channel.id)).toEqual([dm]);
+      expect(body.messages.matches[0].channel.is_im).toBe(true);
+    }
+  });
+
+  it("with:@user finds DMs with that user and threads they replied in", async () => {
+    const dm = await dmWithCarol();
+    const parent = await call(app, "chat.postMessage", { channel: "C000000001", text: "globex thread parent" });
+    await call(
+      app,
+      "chat.postMessage",
+      { channel: "C000000001", thread_ts: parent.ts, text: "globex reply" },
+      OTHER_TOKEN,
+    );
+    await call(app, "chat.postMessage", { channel: "C000000001", text: "globex unrelated" });
+
+    const body = await call(app, "search.messages", { query: "globex with:@carol", sort: "timestamp" });
+    expect(body.messages.matches.map((m: any) => m.text).sort()).toEqual(
+      ["globex reply", "globex thread parent", "invoice copy for globex"].sort(),
+    );
+    expect(body.messages.matches.some((m: any) => m.channel.id === dm)).toBe(true);
+  });
+
+  it("is:thread keeps thread parents and replies only", async () => {
+    const parent = await call(app, "chat.postMessage", { channel: "C000000001", text: "refund thread parent" });
+    await call(app, "chat.postMessage", { channel: "C000000001", thread_ts: parent.ts, text: "refund reply" });
+    await call(app, "chat.postMessage", { channel: "C000000001", text: "refund standalone" });
+
+    const body = await call(app, "search.messages", { query: "refund is:thread" });
+    expect(body.messages.matches.map((m: any) => m.text).sort()).toEqual(["refund reply", "refund thread parent"]);
+  });
+});
+
 describe("parseSlackSearchQuery", () => {
   it("separates terms, quoted phrases, and modifiers", () => {
     expect(parseSlackSearchQuery('"refunds over" in:#support from:<@U123|bob> 502')).toEqual({
       terms: ["refunds over", "502"],
       inChannels: ["support"],
+      inDmWith: [],
       fromUsers: ["U123"],
+      withUsers: [],
+      threadsOnly: false,
+    });
+  });
+
+  it("reads in:@user as a DM, with:, and is:thread", () => {
+    expect(parseSlackSearchQuery("in:@carol in:<@U9> with:@bob is:thread is:starred x")).toMatchObject({
+      terms: ["is:starred", "x"],
+      inChannels: [],
+      inDmWith: ["carol", "U9"],
+      withUsers: ["bob"],
+      threadsOnly: true,
     });
   });
 
