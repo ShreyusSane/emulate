@@ -230,7 +230,24 @@ export function conversationsRoutes(ctx: RouteContext): void {
     const authUserId = getAuthUserId(authUser);
     if (!canReadConversation(ch, authSlackUser, authUserId)) return slackError(c, "not_in_channel");
 
-    return slackOk(c, { channel: formatChannel(ch, authUserId, authSlackUser?.name) });
+    const channelInfo = formatChannel(ch, authUserId, authSlackUser?.name);
+    // Slack reports unread counts on DMs and group DMs, which is how clients find
+    // unread direct messages; channels need conversations.history from last_read.
+    if (isDirectConversation(ch) && channelInfo.is_member) {
+      const lastRead = channelInfo.last_read ?? "0000000000.000000";
+      const unread = ss()
+        .messages.findBy("channel_id", ch.channel_id)
+        .filter((m) => (!m.thread_ts || m.thread_ts === m.ts) && m.ts > lastRead);
+      return slackOk(c, {
+        channel: {
+          ...channelInfo,
+          unread_count: unread.length,
+          // The display count leaves out the viewer's own messages.
+          unread_count_display: unread.filter((m) => m.user !== authUserId).length,
+        },
+      });
+    }
+    return slackOk(c, { channel: channelInfo });
   });
 
   // conversations.create
