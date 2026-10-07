@@ -974,6 +974,35 @@ describe("Slack plugin - conversations", () => {
     expect(body.ok).toBe(true);
     expect(body.channel.id).toBe(ch.channel_id);
     expect(body.channel.name).toBe(ch.name);
+    // Channels report last_read only; unread counts are a DM and group DM field.
+    expect(body.channel.unread_count).toBeUndefined();
+  });
+
+  it("reports unread counts for a DM since the viewer's read cursor", async () => {
+    insertSlackTestUser(store, "U000000002", "dm-peer");
+    tokenMap.set("xoxb-dm-peer-token", { login: "U000000002", id: 2, scopes: ["chat:write", "im:write"] });
+    const call = async (method: string, body: Record<string, unknown>, token?: string) =>
+      (await (
+        await app.request(`${base}/api/${method}`, {
+          method: "POST",
+          headers: token ? { Authorization: `Bearer ${token}`, "Content-Type": "application/json" } : authHeaders(),
+          body: JSON.stringify(body),
+        })
+      ).json()) as any;
+
+    const dm = (await call("conversations.open", { users: "U000000001" }, "xoxb-dm-peer-token")).channel.id;
+    const info = async () => (await call("conversations.info", { channel: dm })).channel;
+    expect(await info()).toMatchObject({ unread_count: 0, unread_count_display: 0 });
+
+    await call("chat.postMessage", { channel: dm, text: "one" }, "xoxb-dm-peer-token");
+    const second = await call("chat.postMessage", { channel: dm, text: "two" }, "xoxb-dm-peer-token");
+    await call("chat.postMessage", { channel: dm, thread_ts: second.ts, text: "a reply" }, "xoxb-dm-peer-token");
+    await call("chat.postMessage", { channel: dm, text: "my own" });
+    // Thread replies are not counted; the viewer's own message counts but is not displayed.
+    expect(await info()).toMatchObject({ unread_count: 3, unread_count_display: 2 });
+
+    await call("conversations.mark", { channel: dm, ts: second.ts });
+    expect(await info()).toMatchObject({ unread_count: 1, unread_count_display: 0 });
   });
 
   it("handles legacy username channel membership consistently", async () => {
