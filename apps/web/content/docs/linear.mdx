@@ -56,6 +56,20 @@ Connections use Relay-style cursors with `nodes`, `edges`, and `pageInfo`.
 
 Issue selections expose both numeric `priority` and Linear's derived `priorityLabel` values: `No priority`, `Urgent`, `High`, `Medium`, and `Low`.
 
+Requests are validated against Linear's published schema, so the documents `@linear/sdk` generates work unchanged. Fields the emulator does not model resolve to the empty value of their type (`null`, an empty list, or an empty connection). A query, mutation, argument, or filter field it does not implement is an error with `extensions.code` `EMULATOR_UNSUPPORTED`, rather than being ignored.
+
+Filters take Linear's shapes on `issues`, `users`, `teams`, `workflowStates`, `cycles`, `issueLabels`, and `comments`:
+
+```graphql
+query {
+  issues(filter: { team: { key: { eq: "ENG" } }, labels: { some: { name: { eq: "Bug" } } }, assignee: { isMe: { eq: true } } }) {
+    nodes { identifier title }
+  }
+}
+```
+
+Fields in a filter must all match, with all of `and` and at least one of `or`. Issue lists leave out archived issues unless `includeArchived: true`.
+
 ## Auth
 
 GraphQL accepts `Authorization: Bearer <token>` or a bare personal API key value. The default seeded token is `lin_test_admin`.

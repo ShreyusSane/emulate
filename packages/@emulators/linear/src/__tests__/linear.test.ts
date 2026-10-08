@@ -226,10 +226,10 @@ describe("Linear emulator", () => {
 
     const updateWithUnknownAssignee = await gql(
       app,
-      `mutation UpdateIssue($input: IssueUpdateInput!) {
-        issueUpdate(input: $input) { issue { id } }
+      `mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) {
+        issueUpdate(id: $id, input: $input) { issue { id } }
       }`,
-      { input: { id: issue.linear_id, assigneeId: "missing-user" } },
+      { id: issue.linear_id, input: { assigneeId: "missing-user" } },
     );
     expect(updateWithUnknownAssignee.status).toBe(400);
     const updateBody = (await updateWithUnknownAssignee.json()) as any;
@@ -259,7 +259,7 @@ describe("Linear emulator", () => {
       `mutation CreateWebhook($input: WebhookCreateInput!) {
         webhookCreate(input: $input) { webhook { id } }
       }`,
-      { input: { teamId: "missing-team", url: "http://127.0.0.1:1/linear" } },
+      { input: { teamId: "missing-team", url: "http://127.0.0.1:1/linear", resourceTypes: ["Issue"] } },
     );
     expect(webhookRes.status).toBe(400);
     const webhookBody = (await webhookRes.json()) as any;
@@ -267,10 +267,9 @@ describe("Linear emulator", () => {
     expect(linearStore.webhooks.all()).toHaveLength(webhookCount);
   });
 
-  it("rejects explicit unknown agent user IDs", async () => {
+  it("rejects agent session inputs Linear does not have", async () => {
     const linearStore = getLinearStore(store);
     const issue = linearStore.issues.findOneBy("identifier", "ENG-1")!;
-    const comment = linearStore.comments.findBy("issue_id", issue.linear_id)[0]!;
     const sessionCount = linearStore.agentSessions.all().length;
 
     const issueSession = await gql(
@@ -282,18 +281,7 @@ describe("Linear emulator", () => {
     );
     expect(issueSession.status).toBe(400);
     const issueSessionBody = (await issueSession.json()) as any;
-    expect(issueSessionBody.errors[0].message).toContain("User not found: missing-user");
-
-    const commentSession = await gql(
-      app,
-      `mutation CreateSession($input: AgentSessionCreateOnComment!) {
-        agentSessionCreateOnComment(input: $input) { agentSession { id } }
-      }`,
-      { input: { commentId: comment.linear_id, agentUserId: "missing-user" } },
-    );
-    expect(commentSession.status).toBe(400);
-    const commentSessionBody = (await commentSession.json()) as any;
-    expect(commentSessionBody.errors[0].message).toContain("User not found: missing-user");
+    expect(issueSessionBody.errors[0].message).toContain('unknown field "agentUserId"');
     expect(linearStore.agentSessions.all()).toHaveLength(sessionCount);
   });
 
@@ -345,7 +333,7 @@ describe("Linear emulator", () => {
       `mutation CreateSession($input: AgentSessionCreateOnIssue!) {
         agentSessionCreateOnIssue(input: $input) { agentSession { id } }
       }`,
-      { input: { issueId, plan: "Clean up child records" } },
+      { input: { issueId } },
     );
     const sessionBody = (await sessionRes.json()) as any;
     const sessionId = sessionBody.data.agentSessionCreateOnIssue.agentSession.id;
@@ -392,7 +380,7 @@ describe("Linear emulator", () => {
       `mutation CreateSession($input: AgentSessionCreateOnComment!) {
         agentSessionCreateOnComment(input: $input) { agentSession { id } }
       }`,
-      { input: { commentId, plan: "Handle the comment." } },
+      { input: { commentId } },
     );
     const sessionBody = (await sessionRes.json()) as any;
     const sessionId = sessionBody.data.agentSessionCreateOnComment.agentSession.id;
@@ -443,10 +431,10 @@ describe("Linear emulator", () => {
 
     const complete = await gql(
       app,
-      `mutation UpdateIssue($input: IssueUpdateInput!) {
-        issueUpdate(input: $input) { issue { completedAt canceledAt startedAt state { name } } }
+      `mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) {
+        issueUpdate(id: $id, input: $input) { issue { completedAt canceledAt startedAt state { name } } }
       }`,
-      { input: { id: issueId, stateId: done.linear_id } },
+      { id: issueId, input: { stateId: done.linear_id } },
     );
     const completeBody = (await complete.json()) as any;
     expect(completeBody.data.issueUpdate.issue.state.name).toBe("Done");
@@ -454,10 +442,10 @@ describe("Linear emulator", () => {
 
     const reopen = await gql(
       app,
-      `mutation UpdateIssue($input: IssueUpdateInput!) {
-        issueUpdate(input: $input) { issue { completedAt canceledAt startedAt state { name } } }
+      `mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) {
+        issueUpdate(id: $id, input: $input) { issue { completedAt canceledAt startedAt state { name } } }
       }`,
-      { input: { id: issueId, stateId: todo.linear_id } },
+      { id: issueId, input: { stateId: todo.linear_id } },
     );
     const reopenBody = (await reopen.json()) as any;
     expect(reopenBody.data.issueUpdate.issue.state.name).toBe("Todo");
@@ -512,8 +500,8 @@ describe("Linear emulator", () => {
         byLabel: issues(filter: $labelFilter) { nodes { identifier } }
       }`,
       {
-        teamFilter: { team: { neq: "ENG" } },
-        labelFilter: { labels: { neq: "Bug" } },
+        teamFilter: { team: { key: { neq: "ENG" } } },
+        labelFilter: { labels: { every: { name: { neq: "Bug" } } } },
       },
     );
     expect(res.status).toBe(200);
@@ -710,7 +698,7 @@ describe("Linear emulator", () => {
       `mutation($input: WebhookCreateInput!) {
         webhookCreate(input: $input) { success webhook { id } }
       }`,
-      { input: { url: "http://127.0.0.1:1/linear" } },
+      { input: { url: "http://127.0.0.1:1/linear", resourceTypes: ["Issue"] } },
     );
     expect(adminOnly.status).toBe(400);
     const adminBody = (await adminOnly.json()) as any;
@@ -821,7 +809,7 @@ describe("Linear emulator", () => {
       `mutation($input: WebhookCreateInput!) {
         webhookCreate(input: $input) { success webhook { id } }
       }`,
-      { input: { url: "http://127.0.0.1:1/linear" } },
+      { input: { url: "http://127.0.0.1:1/linear", resourceTypes: ["Issue"] } },
       "lin_write_only",
     );
     expect(res.status).toBe(400);

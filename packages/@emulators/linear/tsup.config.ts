@@ -9,11 +9,17 @@ const copyFonts = async () => {
   cpSync(src, dest, { recursive: true });
 };
 
+// Linear's GraphQL schema is read at runtime from next to the bundle.
+const copyAssets = async () => {
+  await copyFonts();
+  cpSync(resolve(__dirname, "src/linear.graphql"), resolve(__dirname, "dist/linear.graphql"));
+};
+
 export default defineConfig({
   entry: ["src/index.ts"],
   format: ["esm"],
   dts: true,
   sourcemap: true,
   noExternal: [/^@emulators\/core/],
-  onSuccess: copyFonts,
+  onSuccess: copyAssets,
 });
