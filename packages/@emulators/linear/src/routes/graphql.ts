@@ -30,11 +30,14 @@ import type {
   LinearWorkflowState,
 } from "../entities.js";
 import { dispatchLinearWebhook } from "../webhooks.js";
+import { buildLinearSchema, createFieldResolver, typeResolver } from "./full-schema.js";
+import { FILTER_SDL, collection, matchesFilter, record, value, type FilterView } from "./filters.js";
 
 const PRIORITY_LABELS = ["No priority", "Urgent", "High", "Medium", "Low"] as const;
 
-const schema = buildSchema(`
-  scalar TeamFilter
+// The subset of Linear's schema the emulator implements. Requests are validated
+// against Linear's full schema; see full-schema.ts.
+const supportedSchema = buildSchema(`
   scalar PaginationOrderBy
 
   type Query {
@@ -52,17 +55,17 @@ const schema = buildSchema(`
       orderBy: PaginationOrderBy
     ): TeamConnection!
     team(id: String!): Team
-    workflowStates(first: Int, after: String, last: Int, before: String): WorkflowStateConnection!
+    workflowStates(first: Int, after: String, last: Int, before: String, filter: WorkflowStateFilter): WorkflowStateConnection!
     workflowState(id: String!): WorkflowState
-    issues(first: Int, after: String, last: Int, before: String, filter: IssueFilter, orderBy: String): IssueConnection!
+    issues(first: Int, after: String, last: Int, before: String, filter: IssueFilter, orderBy: String, includeArchived: Boolean): IssueConnection!
     issue(id: String!): Issue
-    comments(first: Int, after: String, last: Int, before: String): CommentConnection!
+    comments(first: Int, after: String, last: Int, before: String, filter: CommentFilter): CommentConnection!
     comment(id: String!): Comment
-    issueLabels(first: Int, after: String, last: Int, before: String): IssueLabelConnection!
+    issueLabels(first: Int, after: String, last: Int, before: String, filter: IssueLabelFilter): IssueLabelConnection!
     issueLabel(id: String!): IssueLabel
     projects(first: Int, after: String, last: Int, before: String): ProjectConnection!
     project(id: String!): Project
-    cycles(first: Int, after: String, last: Int, before: String): CycleConnection!
+    cycles(first: Int, after: String, last: Int, before: String, filter: CycleFilter): CycleConnection!
     cycle(id: String!): Cycle
     webhooks(first: Int, after: String, last: Int, before: String): WebhookConnection!
     webhook(id: String!): Webhook
@@ -220,7 +223,7 @@ const schema = buildSchema(`
     issueOrderingNoPriorityFirst: Boolean
     issueSortOrderDefaultToBottom: Boolean
     states(first: Int, after: String, last: Int, before: String): WorkflowStateConnection!
-    issues(first: Int, after: String, last: Int, before: String, filter: IssueFilter): IssueConnection!
+    issues(first: Int, after: String, last: Int, before: String, filter: IssueFilter, includeArchived: Boolean): IssueConnection!
     labels(first: Int, after: String, last: Int, before: String): IssueLabelConnection!
     projects(first: Int, after: String, last: Int, before: String): ProjectConnection!
     cycles(first: Int, after: String, last: Int, before: String): CycleConnection!
@@ -235,7 +238,7 @@ const schema = buildSchema(`
     createdAt: String!
     updatedAt: String!
     team: Team!
-    issues(first: Int, after: String, last: Int, before: String): IssueConnection!
+    issues(first: Int, after: String, last: Int, before: String, includeArchived: Boolean): IssueConnection!
   }
 
   type Issue {
@@ -286,7 +289,7 @@ const schema = buildSchema(`
     createdAt: String!
     updatedAt: String!
     team: Team
-    issues(first: Int, after: String, last: Int, before: String): IssueConnection!
+    issues(first: Int, after: String, last: Int, before: String, includeArchived: Boolean): IssueConnection!
   }
 
   type Project {
@@ -297,7 +300,7 @@ const schema = buildSchema(`
     createdAt: String!
     updatedAt: String!
     team: Team
-    issues(first: Int, after: String, last: Int, before: String): IssueConnection!
+    issues(first: Int, after: String, last: Int, before: String, includeArchived: Boolean): IssueConnection!
   }
 
   type Cycle {
@@ -309,7 +312,7 @@ const schema = buildSchema(`
     createdAt: String!
     updatedAt: String!
     team: Team!
-    issues(first: Int, after: String, last: Int, before: String): IssueConnection!
+    issues(first: Int, after: String, last: Int, before: String, includeArchived: Boolean): IssueConnection!
   }
 
   type Webhook {
@@ -393,40 +396,7 @@ const schema = buildSchema(`
   type IssueArchivePayload { success: Boolean! lastSyncId: Float entity: Issue }
   type DeletePayload { success: Boolean! lastSyncId: Float entityId: String }
 
-  input StringComparator {
-    eq: String
-    neq: String
-    in: [String!]
-    nin: [String!]
-    contains: String
-    startsWith: String
-    endsWith: String
-    eqIgnoreCase: String
-    neqIgnoreCase: String
-    null: Boolean
-  }
-
-  input IssueFilter {
-    id: StringComparator
-    identifier: StringComparator
-    title: StringComparator
-    team: StringComparator
-    state: StringComparator
-    assignee: StringComparator
-    creator: StringComparator
-    project: StringComparator
-    cycle: StringComparator
-    labels: StringComparator
-    or: [IssueFilter!]
-  }
-
-  input UserFilter {
-    id: StringComparator
-    email: StringComparator
-    name: StringComparator
-    active: Boolean
-    admin: Boolean
-  }
+  ${FILTER_SDL}
 
   input IssueCreateInput {
     teamId: String!
@@ -524,6 +494,9 @@ const schema = buildSchema(`
   }
 `);
 
+const schema = buildLinearSchema();
+const fieldResolver = createFieldResolver(supportedSchema);
+
 interface LinearGraphQLContext {
   store: Store;
   c: Context;
@@ -563,6 +536,8 @@ async function runGraphQL(
 
   return graphql({
     schema,
+    fieldResolver,
+    typeResolver,
     source: query,
     rootValue: createRoot(opts.context),
     contextValue: opts.context,
@@ -625,9 +600,14 @@ function createRoot(context: LinearGraphQLContext) {
       const team = resolveTeam(store, id);
       return team ? formatTeam(context, team) : null;
     },
-    workflowStates: (args: ConnectionArgs) => {
+    workflowStates: (args: ConnectionArgs & { filter?: Record<string, unknown> }) => {
       requireRead();
-      return connectStates(context, sortByPosition(ls().workflowStates.all()), args);
+      const states = sortByPosition(ls().workflowStates.all());
+      return connectStates(
+        context,
+        applyFilter(states, args.filter, (state) => stateView(context, state)),
+        args,
+      );
     },
     workflowState: ({ id }: { id: string }) => {
       requireRead();
@@ -643,18 +623,28 @@ function createRoot(context: LinearGraphQLContext) {
       const issue = resolveIssue(store, id);
       return issue ? formatIssue(context, issue) : null;
     },
-    comments: (args: ConnectionArgs) => {
+    comments: (args: ConnectionArgs & { filter?: Record<string, unknown> }) => {
       requireRead();
-      return connectComments(context, sortByCreated(ls().comments.all()), args);
+      const comments = sortByCreated(ls().comments.all());
+      return connectComments(
+        context,
+        applyFilter(comments, args.filter, (comment) => commentView(context, comment)),
+        args,
+      );
     },
     comment: ({ id }: { id: string }) => {
       requireRead();
       const comment = ls().comments.findOneBy("linear_id", id);
       return comment ? formatComment(context, comment) : null;
     },
-    issueLabels: (args: ConnectionArgs) => {
+    issueLabels: (args: ConnectionArgs & { filter?: Record<string, unknown> }) => {
       requireRead();
-      return connectLabels(context, sortByCreated(ls().issueLabels.all()), args);
+      const labels = sortByCreated(ls().issueLabels.all());
+      return connectLabels(
+        context,
+        applyFilter(labels, args.filter, (label) => labelView(context, label)),
+        args,
+      );
     },
     issueLabel: ({ id }: { id: string }) => {
       requireRead();
@@ -670,9 +660,14 @@ function createRoot(context: LinearGraphQLContext) {
       const project = resolveProject(store, id);
       return project ? formatProject(context, project) : null;
     },
-    cycles: (args: ConnectionArgs) => {
+    cycles: (args: ConnectionArgs & { filter?: Record<string, unknown> }) => {
       requireRead();
-      return connectCycles(context, sortByCreated(ls().cycles.all()), args);
+      const cycles = sortByCreated(ls().cycles.all());
+      return connectCycles(
+        context,
+        applyFilter(cycles, args.filter, (cycle) => cycleView(context, cycle)),
+        args,
+      );
     },
     cycle: ({ id }: { id: string }) => {
       requireRead();
@@ -1521,8 +1516,14 @@ function connectStates(context: LinearGraphQLContext, items: LinearWorkflowState
   return mapConnection(items, args, (item) => formatState(context, item));
 }
 
-function connectIssues(context: LinearGraphQLContext, items: LinearIssue[], args: ConnectionArgs) {
-  return mapConnection(items, args, (item) => formatIssue(context, item));
+// Like Linear, issue lists leave out archived issues unless includeArchived is set.
+function connectIssues(
+  context: LinearGraphQLContext,
+  items: LinearIssue[],
+  args: ConnectionArgs & { includeArchived?: boolean },
+) {
+  const listed = args.includeArchived ? items : items.filter((issue) => !issue.archived_at);
+  return mapConnection(listed, args, (item) => formatIssue(context, item));
 }
 
 function connectComments(context: LinearGraphQLContext, items: LinearComment[], args: ConnectionArgs) {
@@ -1562,19 +1563,6 @@ function mapConnection<T, U>(items: T[], args: ConnectionArgs, mapper: (item: T)
   };
 }
 
-const ISSUE_FILTER_FIELDS = [
-  "id",
-  "identifier",
-  "title",
-  "team",
-  "state",
-  "assignee",
-  "creator",
-  "project",
-  "cycle",
-  "labels",
-] as const;
-
 function filteredIssues(
   context: LinearGraphQLContext,
   filter?: Record<string, unknown>,
@@ -1585,7 +1573,7 @@ function filteredIssues(
     issues = [...issues].sort((a, b) => a.updated_at.localeCompare(b.updated_at));
   }
   if (!filter) return issues;
-  return issues.filter((issue) => issueMatchesFilter(context, issue, filter));
+  return issues.filter((issue) => matchesFilter(issueView(context, issue), filter));
 }
 
 function filteredTeams(
@@ -1609,7 +1597,7 @@ function filteredTeams(
     }
   }
   if (!isRecord(filter)) return teams;
-  return teams.filter((team) => teamMatchesFilter(team, filter));
+  return teams.filter((team) => matchesFilter(teamView(team), filter));
 }
 
 function teamOrderValue(team: LinearTeam, field: string): string {
@@ -1619,133 +1607,145 @@ function teamOrderValue(team: LinearTeam, field: string): string {
   return team.created_at;
 }
 
-function teamMatchesFilter(team: LinearTeam, filter: Record<string, unknown>): boolean {
-  const checks = [
-    aliasComparatorMatches([team.linear_id, team.key, team.name], filter.id),
-    comparatorMatches(team.key, filter.key),
-    comparatorMatches(team.name, filter.name),
-    comparatorMatches(team.name, filter.displayName),
-    typeof filter.private !== "boolean" || team.private === filter.private,
-  ];
-  const orFilters = Array.isArray(filter.or) ? filter.or.filter(isRecord) : [];
-  const hasOwnPredicate = ["id", "key", "name", "displayName", "private"].some((field) => filter[field] != null);
-  const ownMatch = hasOwnPredicate ? checks.every(Boolean) : orFilters.length === 0;
-  return ownMatch || orFilters.some((orFilter) => teamMatchesFilter(team, orFilter));
-}
-
-function issueMatchesFilter(
-  context: LinearGraphQLContext,
-  issue: LinearIssue,
-  filter: Record<string, unknown>,
-): boolean {
-  const ls = getLinearStore(context.store);
-  const team = ls.teams.findOneBy("linear_id", issue.team_id);
-  const state = ls.workflowStates.findOneBy("linear_id", issue.state_id);
-  const assignee = issue.assignee_id ? ls.users.findOneBy("linear_id", issue.assignee_id) : undefined;
-  const creator = issue.creator_id ? ls.users.findOneBy("linear_id", issue.creator_id) : undefined;
-  const project = issue.project_id ? ls.projects.findOneBy("linear_id", issue.project_id) : undefined;
-  const cycle = issue.cycle_id ? ls.cycles.findOneBy("linear_id", issue.cycle_id) : undefined;
-  const labels = issue.label_ids
-    .map((labelId) => ls.issueLabels.findOneBy("linear_id", labelId))
-    .filter((label): label is LinearIssueLabel => Boolean(label));
-
-  const checks = [
-    comparatorMatches(issue.linear_id, filter.id),
-    comparatorMatches(issue.identifier, filter.identifier),
-    comparatorMatches(issue.title, filter.title),
-    aliasComparatorMatches([team?.linear_id, team?.key, team?.name], filter.team),
-    aliasComparatorMatches([state?.linear_id, state?.name, state?.type], filter.state),
-    aliasComparatorMatches([assignee?.linear_id, assignee?.email, assignee?.name], filter.assignee),
-    aliasComparatorMatches([creator?.linear_id, creator?.email, creator?.name], filter.creator),
-    aliasComparatorMatches([project?.linear_id, project?.name], filter.project),
-    aliasComparatorMatches([cycle?.linear_id, cycle?.name], filter.cycle),
-    aliasComparatorMatches(
-      labels.flatMap((label) => [label.linear_id, label.name]),
-      filter.labels,
-    ),
-  ];
-  const orFilters = Array.isArray(filter.or) ? filter.or.filter(isRecord) : [];
-  const ownMatch = issueFilterHasOwnPredicates(filter) ? checks.every(Boolean) : orFilters.length === 0;
-  return ownMatch || orFilters.some((orFilter) => issueMatchesFilter(context, issue, orFilter));
-}
-
-function issueFilterHasOwnPredicates(filter: Record<string, unknown>): boolean {
-  return ISSUE_FILTER_FIELDS.some((field) => filter[field] != null);
-}
-
 function filterUsers(
   context: LinearGraphQLContext,
   users: LinearUser[],
   filter?: Record<string, unknown>,
 ): LinearUser[] {
   if (!filter) return sortByCreated(users);
-  return sortByCreated(users).filter(
-    (user) =>
-      comparatorMatches(user.linear_id, filter.id) &&
-      comparatorMatches(user.email, filter.email) &&
-      comparatorMatches(user.name, filter.name) &&
-      (typeof filter.active !== "boolean" || user.active === filter.active) &&
-      (typeof filter.admin !== "boolean" || user.admin === filter.admin),
-  );
+  return sortByCreated(users).filter((user) => matchesFilter(userView(context, user), filter));
 }
 
-function comparatorMatches(value: string | undefined | null, input: unknown): boolean {
-  if (!input || !isRecord(input)) return true;
-  if ("null" in input && typeof input.null === "boolean") return input.null ? value == null : value != null;
-  if (value == null) return false;
-  const val = String(value);
-  if (typeof input.eq === "string" && val !== input.eq) return false;
-  if (typeof input.neq === "string" && val === input.neq) return false;
-  if (Array.isArray(input.in) && !input.in.includes(val)) return false;
-  if (Array.isArray(input.nin) && input.nin.includes(val)) return false;
-  if (typeof input.contains === "string" && !val.includes(input.contains)) return false;
-  if (typeof input.startsWith === "string" && !val.startsWith(input.startsWith)) return false;
-  if (typeof input.endsWith === "string" && !val.endsWith(input.endsWith)) return false;
-  if (typeof input.eqIgnoreCase === "string" && val.toLowerCase() !== input.eqIgnoreCase.toLowerCase()) return false;
-  if (typeof input.neqIgnoreCase === "string" && val.toLowerCase() === input.neqIgnoreCase.toLowerCase()) return false;
-  return true;
+// Filterable views of records, for Linear's filter inputs (filters.ts).
+function teamView(team: LinearTeam): FilterView {
+  return {
+    id: () => value(team.linear_id),
+    key: () => value(team.key),
+    name: () => value(team.name),
+    private: () => value(team.private),
+  };
 }
 
-function aliasComparatorMatches(values: Array<string | undefined | null>, input: unknown): boolean {
-  if (!input || !isRecord(input)) return true;
-  const candidates = values.filter((value): value is string => value != null);
-  if ("null" in input && typeof input.null === "boolean") {
-    return input.null ? candidates.length === 0 : candidates.length > 0;
-  }
-  if (candidates.length === 0) return false;
-
-  const neq = typeof input.neq === "string" ? input.neq : undefined;
-  const nin = Array.isArray(input.nin) ? input.nin : undefined;
-  const neqIgnoreCase = typeof input.neqIgnoreCase === "string" ? input.neqIgnoreCase : undefined;
-  if (neq !== undefined && candidates.some((value) => value === neq)) return false;
-  if (nin && candidates.some((value) => nin.includes(value))) return false;
-  if (neqIgnoreCase !== undefined && candidates.some((value) => value.toLowerCase() === neqIgnoreCase.toLowerCase())) {
-    return false;
-  }
-
-  if (!hasPositiveComparator(input)) return true;
-  return candidates.some((value) => positiveComparatorMatches(value, input));
+function userView(context: LinearGraphQLContext, user: LinearUser): FilterView {
+  return {
+    id: () => value(user.linear_id),
+    email: () => value(user.email),
+    name: () => value(user.name),
+    displayName: () => value(user.display_name),
+    active: () => value(user.active),
+    admin: () => value(user.admin),
+    isMe: () => value(currentUser(context.store, context.c)?.linear_id === user.linear_id),
+  };
 }
 
-function hasPositiveComparator(input: Record<string, unknown>): boolean {
-  return (
-    typeof input.eq === "string" ||
-    Array.isArray(input.in) ||
-    typeof input.contains === "string" ||
-    typeof input.startsWith === "string" ||
-    typeof input.endsWith === "string" ||
-    typeof input.eqIgnoreCase === "string"
-  );
+function issueView(context: LinearGraphQLContext, issue: LinearIssue): FilterView {
+  const ls = getLinearStore(context.store);
+  const user = (id: string | null) => {
+    const found = id ? ls.users.findOneBy("linear_id", id) : undefined;
+    return record(found ? userView(context, found) : null);
+  };
+  return {
+    id: () => value(issue.linear_id, [issue.identifier]),
+    number: () => value(issue.number),
+    title: () => value(issue.title),
+    description: () => value(issue.description),
+    priority: () => value(issue.priority),
+    createdAt: () => value(issue.created_at),
+    updatedAt: () => value(issue.updated_at),
+    startedAt: () => value(issue.started_at),
+    completedAt: () => value(issue.completed_at),
+    canceledAt: () => value(issue.canceled_at),
+    team: () => {
+      const team = ls.teams.findOneBy("linear_id", issue.team_id);
+      return record(team ? teamView(team) : null);
+    },
+    state: () => {
+      const state = ls.workflowStates.findOneBy("linear_id", issue.state_id);
+      return record(state ? stateView(context, state) : null);
+    },
+    assignee: () => user(issue.assignee_id),
+    creator: () => user(issue.creator_id),
+    delegate: () => user(issue.delegate_id),
+    project: () => {
+      const project = issue.project_id ? ls.projects.findOneBy("linear_id", issue.project_id) : undefined;
+      return record(project ? { id: () => value(project.linear_id), name: () => value(project.name) } : null);
+    },
+    cycle: () => {
+      const cycle = issue.cycle_id ? ls.cycles.findOneBy("linear_id", issue.cycle_id) : undefined;
+      return record(cycle ? cycleView(context, cycle) : null);
+    },
+    labels: () =>
+      collection(
+        issue.label_ids
+          .map((labelId) => ls.issueLabels.findOneBy("linear_id", labelId))
+          .filter((label): label is LinearIssueLabel => Boolean(label))
+          .map((label) => labelView(context, label)),
+      ),
+  };
 }
 
-function positiveComparatorMatches(value: string, input: Record<string, unknown>): boolean {
-  if (typeof input.eq === "string" && value !== input.eq) return false;
-  if (Array.isArray(input.in) && !input.in.includes(value)) return false;
-  if (typeof input.contains === "string" && !value.includes(input.contains)) return false;
-  if (typeof input.startsWith === "string" && !value.startsWith(input.startsWith)) return false;
-  if (typeof input.endsWith === "string" && !value.endsWith(input.endsWith)) return false;
-  if (typeof input.eqIgnoreCase === "string" && value.toLowerCase() !== input.eqIgnoreCase.toLowerCase()) return false;
-  return true;
+function stateView(context: LinearGraphQLContext, state: LinearWorkflowState): FilterView {
+  return {
+    id: () => value(state.linear_id),
+    name: () => value(state.name),
+    type: () => value(state.type),
+    team: () => {
+      const team = getLinearStore(context.store).teams.findOneBy("linear_id", state.team_id);
+      return record(team ? teamView(team) : null);
+    },
+  };
+}
+
+function cycleView(context: LinearGraphQLContext, cycle: LinearCycle): FilterView {
+  return {
+    id: () => value(cycle.linear_id),
+    name: () => value(cycle.name),
+    number: () => value(cycle.number),
+    startsAt: () => value(cycle.starts_at),
+    endsAt: () => value(cycle.ends_at),
+    isActive: () => {
+      const now = new Date().toISOString();
+      return value(Boolean(cycle.starts_at && cycle.ends_at && cycle.starts_at <= now && now < cycle.ends_at));
+    },
+    team: () => {
+      const team = getLinearStore(context.store).teams.findOneBy("linear_id", cycle.team_id);
+      return record(team ? teamView(team) : null);
+    },
+  };
+}
+
+function labelView(context: LinearGraphQLContext, label: LinearIssueLabel): FilterView {
+  return {
+    id: () => value(label.linear_id),
+    name: () => value(label.name),
+    team: () => {
+      const team = label.team_id
+        ? getLinearStore(context.store).teams.findOneBy("linear_id", label.team_id)
+        : undefined;
+      return record(team ? teamView(team) : null);
+    },
+  };
+}
+
+function commentView(context: LinearGraphQLContext, comment: LinearComment): FilterView {
+  const ls = getLinearStore(context.store);
+  return {
+    id: () => value(comment.linear_id),
+    body: () => value(comment.body),
+    createdAt: () => value(comment.created_at),
+    issue: () => {
+      const issue = ls.issues.findOneBy("linear_id", comment.issue_id);
+      return record(issue ? issueView(context, issue) : null);
+    },
+    user: () => {
+      const user = comment.user_id ? ls.users.findOneBy("linear_id", comment.user_id) : undefined;
+      return record(user ? userView(context, user) : null);
+    },
+  };
+}
+
+function applyFilter<T>(items: T[], filter: Record<string, unknown> | undefined, view: (item: T) => FilterView): T[] {
+  return filter ? items.filter((item) => matchesFilter(view(item), filter)) : items;
 }
 
 function sortByCreated<T extends { created_at: string }>(items: T[]): T[] {
