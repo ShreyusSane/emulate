@@ -370,6 +370,40 @@ describe("Google plugin integration", () => {
     expect(listBody.messages.some((entry) => entry.id === imported.id)).toBe(true);
   });
 
+  it("returns bytes as padded URL-safe base64, as Gmail does", async () => {
+    // Lengths 1 and 2 past a multiple of 3 need "==" and "=" padding.
+    const padded = (value: string) => value.length % 4 === 0 && /^[A-Za-z0-9_-]*={0,2}$/.test(value);
+    const raw = buildRawMessage({
+      from: "Ops <ops@example.com>",
+      to: "testuser@example.com",
+      subject: "Padding check",
+      body_text: "Hi Priya, I am looking into it today.",
+      attachments: [{ filename: "notes.txt", mime_type: "text/plain", content: "abcd" }],
+    });
+    const importRes = await jsonRequest(app, "/gmail/v1/users/me/messages/import", {
+      method: "POST",
+      body: { raw, labelIds: ["INBOX"] },
+    });
+    const { id } = (await importRes.json()) as { id: string };
+
+    const fullRes = await app.request(`${base}/gmail/v1/users/me/messages/${id}`, { headers: authHeaders() });
+    const full = (await fullRes.json()) as {
+      payload: { parts?: Array<{ mimeType: string; body?: { data?: string; attachmentId?: string } }> };
+    };
+    const textPart = full.payload.parts?.find((part) => part.mimeType === "text/plain" && part.body?.data);
+    expect(padded(textPart!.body!.data!)).toBe(true);
+    expect(Buffer.from(textPart!.body!.data!, "base64url").toString("utf8")).toContain("looking into it today");
+
+    const rawRes = await app.request(`${base}/gmail/v1/users/me/messages/${id}?format=raw`, { headers: authHeaders() });
+    expect(padded(((await rawRes.json()) as { raw: string }).raw)).toBe(true);
+
+    const attachmentId = full.payload.parts?.find((part) => part.body?.attachmentId)?.body?.attachmentId;
+    const attachmentRes = await app.request(`${base}/gmail/v1/users/me/messages/${id}/attachments/${attachmentId}`, {
+      headers: authHeaders(),
+    });
+    expect(((await attachmentRes.json()) as { data: string }).data).toBe("YWJjZA==");
+  });
+
   it("creates, updates, lists, sends, and deletes drafts", async () => {
     const createRaw = buildRawMessage({
       from: "testuser@example.com",
