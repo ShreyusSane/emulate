@@ -324,6 +324,13 @@ export function createLabelRecord(gs: GoogleStore, input: GoogleLabelInput): Goo
   });
 }
 
+// Gmail returns message and attachment bytes as URL-safe base64 with "="
+// padding. Node's "base64url" drops the padding, which strict decoders (such
+// as Python's base64.urlsafe_b64decode) reject.
+export function toGmailBase64(buffer: Buffer): string {
+  return buffer.toString("base64").replace(/\+/g, "-").replace(/\//g, "_");
+}
+
 export function updateLabelRecord(gs: GoogleStore, label: GoogleLabel, input: Partial<GoogleLabelInput>): GoogleLabel {
   return (
     gs.labels.update(label.id, {
@@ -1126,7 +1133,7 @@ export function buildRawMessage(message: {
     }
 
     parts.push(`--${mixedBoundary}--`, "");
-    return Buffer.from(`${headers.join("\r\n")}\r\n\r\n${parts.join("\r\n")}`, "utf8").toString("base64url");
+    return toGmailBase64(Buffer.from(`${headers.join("\r\n")}\r\n\r\n${parts.join("\r\n")}`, "utf8"));
   }
 
   const bodyPart = buildMimeBodyPart({
@@ -1134,11 +1141,11 @@ export function buildRawMessage(message: {
     body_html: message.body_html,
   });
   if (bodyPart) {
-    return Buffer.from(`${headers.join("\r\n")}\r\n\r\n${bodyPart}`, "utf8").toString("base64url");
+    return toGmailBase64(Buffer.from(`${headers.join("\r\n")}\r\n\r\n${bodyPart}`, "utf8"));
   }
 
   headers.push("Content-Type: text/plain; charset=utf-8");
-  return Buffer.from(`${headers.join("\r\n")}\r\n\r\n`, "utf8").toString("base64url");
+  return toGmailBase64(Buffer.from(`${headers.join("\r\n")}\r\n\r\n`, "utf8"));
 }
 
 function buildQueryPredicates(
@@ -1608,7 +1615,7 @@ function createTextBodyPart(partId: string, mimeType: string, content: string, h
     headers,
     body: {
       size: Buffer.byteLength(content, "utf8"),
-      data: Buffer.from(content, "utf8").toString("base64url"),
+      data: toGmailBase64(Buffer.from(content, "utf8")),
     },
   };
 }
@@ -1726,7 +1733,7 @@ function parseRawMessage(raw: string): ParsedRawMessage {
       disposition: node.disposition,
       content_id: node.contentId,
       transfer_encoding: node.transferEncoding,
-      data: (node.body ?? Buffer.alloc(0)).toString("base64url"),
+      data: toGmailBase64(node.body ?? Buffer.alloc(0)),
       size: node.body?.length ?? 0,
     }));
 
