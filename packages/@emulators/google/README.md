@@ -28,6 +28,7 @@ npm install @emulators/google
 - `POST /gmail/v1/users/:userId/messages` — insert a message directly
 - `POST /gmail/v1/users/:userId/messages/:id/modify` — add/remove labels on one message
 - `POST /gmail/v1/users/:userId/messages/batchModify` — add/remove labels across many messages
+- `POST /batch` and `POST /batch/:api/:version` — run several API calls in one multipart/mixed request
 - `POST /gmail/v1/users/:userId/messages/:id/trash` — trash message
 - `POST /gmail/v1/users/:userId/messages/:id/untrash` — untrash message
 
