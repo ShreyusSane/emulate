@@ -1265,4 +1265,72 @@ describe("Google plugin integration", () => {
     expect(uploadedMediaRes.status).toBe(200);
     expect(Buffer.from(await uploadedMediaRes.arrayBuffer()).toString("utf8")).toBe(uploadedContent);
   });
+  it("answers a batch request with one response part per call, in order", async () => {
+    // Shaped as google-api-python-client writes it: LF line endings, a Host
+    // header and credentials in each part, and none on the batch request itself.
+    const boundary = "===============7330845974216740156==";
+    const part = (id: number, request: string) =>
+      `--${boundary}\nContent-Type: application/http\nMIME-Version: 1.0\nContent-Transfer-Encoding: binary\n` +
+      `Content-ID: <c0ffee+${id}>\n\n${request}\n`;
+    const body =
+      part(
+        1,
+        "GET /gmail/v1/users/me/messages/msg_release?format=metadata HTTP/1.1\n" +
+          "Authorization: Bearer test-token\nHost: localhost:4000\n\n",
+      ) +
+      part(2, "GET /gmail/v1/users/me/messages/missing HTTP/1.1\nAuthorization: Bearer test-token\n\n") +
+      part(
+        3,
+        "POST /gmail/v1/users/me/messages/msg_release/modify HTTP/1.1\nContent-Type: application/json\n" +
+          'Authorization: Bearer test-token\n\n{"addLabelIds": ["Label_ops"]}',
+      ) +
+      part(4, "GET /gmail/v1/users/me/labels HTTP/1.1\n\n") +
+      `--${boundary}--`;
+
+    const res = await app.request(`${base}/batch/gmail/v1`, {
+      method: "POST",
+      headers: { "Content-Type": `multipart/mixed; boundary="${boundary}"` },
+      body,
+    });
+    expect(res.status).toBe(200);
+    const responseBoundary = /boundary=(\S+)/.exec(res.headers.get("Content-Type") ?? "")?.[1];
+    expect(responseBoundary).toBeTruthy();
+
+    const text = await res.text();
+    expect(text.endsWith(`--${responseBoundary}--\r\n`)).toBe(true);
+    const parts = text.split(`--${responseBoundary}`).slice(1, -1);
+    expect(parts.map((p) => /Content-ID: (\S+)/.exec(p)?.[1])).toEqual([
+      "<response-c0ffee+1>",
+      "<response-c0ffee+2>",
+      "<response-c0ffee+3>",
+      "<response-c0ffee+4>",
+    ]);
+    expect(parts.map((p) => /HTTP\/1.1 (\d+)/.exec(p)?.[1])).toEqual(["200", "404", "200", "401"]);
+    const json = (p: string) => JSON.parse(p.split("\r\n\r\n")[2]);
+    expect(json(parts[0]).id).toBe("msg_release");
+    expect(json(parts[2]).labelIds).toContain("Label_ops");
+
+    // The write in the batch landed.
+    const after = await app.request(`${base}/gmail/v1/users/me/messages/msg_release`, { headers: authHeaders() });
+    expect(((await after.json()) as { labelIds: string[] }).labelIds).toContain("Label_ops");
+  });
+
+  it("uses the batch request's credentials for parts without their own", async () => {
+    const boundary = "b";
+    const res = await app.request(`${base}/batch`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": `multipart/mixed; boundary=${boundary}` }),
+      body: `--b\r\nContent-Type: application/http\r\nContent-ID: 1\r\n\r\nGET /gmail/v1/users/me/labels HTTP/1.1\r\n\r\n\r\n--b--\r\n`,
+    });
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).toContain("Content-ID: <response-1>");
+    expect(text).toContain("HTTP/1.1 200 OK");
+    expect(text).toContain("Ops/Review");
+  });
+
+  it("rejects a batch request that is not multipart", async () => {
+    const res = await jsonRequest(app, "/batch", { method: "POST", body: {} });
+    expect(res.status).toBe(400);
+  });
 });

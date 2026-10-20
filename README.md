@@ -977,6 +977,7 @@ Google ID tokens are RS256-signed JWTs. The discovery document advertises RS256,
 - `POST /gmail/v1/users/:userId/messages` - insert a message directly
 - `POST /gmail/v1/users/:userId/messages/:id/modify` - add/remove labels on one message
 - `POST /gmail/v1/users/:userId/messages/batchModify` - add/remove labels across many messages
+- `POST /batch` and `POST /batch/:api/:version` - run several API calls in one multipart/mixed request
 - `POST /gmail/v1/users/:userId/messages/:id/trash` and `POST /gmail/v1/users/:userId/messages/:id/untrash`
 - `GET /gmail/v1/users/:userId/drafts`, `POST /gmail/v1/users/:userId/drafts`, `GET /gmail/v1/users/:userId/drafts/:id`, `PUT /gmail/v1/users/:userId/drafts/:id`, `POST /gmail/v1/users/:userId/drafts/:id/send`, `DELETE /gmail/v1/users/:userId/drafts/:id`
 - `POST /gmail/v1/users/:userId/threads/:id/modify` - add/remove labels across a thread
