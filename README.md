@@ -987,7 +987,7 @@ Google ID tokens are RS256-signed JWTs. The discovery document advertises RS256,
 - `GET /gmail/v1/users/:userId/settings/filters`, `POST /gmail/v1/users/:userId/settings/filters`, `DELETE /gmail/v1/users/:userId/settings/filters/:id`
 - `GET /gmail/v1/users/:userId/settings/forwardingAddresses`, `GET /gmail/v1/users/:userId/settings/sendAs`
 - `GET /discovery/v1/apis/calendar/v3/rest` — public Calendar v3 REST discovery document
-- `GET /calendar/v3/users/:userId/calendarList`, `GET /calendar/v3/calendars/:calendarId/events`, `POST /calendar/v3/calendars/:calendarId/events`, `DELETE /calendar/v3/calendars/:calendarId/events/:eventId`, `POST /calendar/v3/freeBusy`
+- `GET /calendar/v3/users/:userId/calendarList`, `POST /calendar/v3/calendars`, `GET /calendar/v3/calendars/:calendarId`, `GET` and `POST /calendar/v3/calendars/:calendarId/events`, `GET`, `PATCH`, `PUT` and `DELETE /calendar/v3/calendars/:calendarId/events/:eventId`, `POST /calendar/v3/freeBusy` (time zones, event types, coworkers' free/busy; recurring events are rejected)
 - `GET /drive/v3/files`, `GET /drive/v3/files/:fileId`, `POST /drive/v3/files`, `PATCH /drive/v3/files/:fileId`, `PUT /drive/v3/files/:fileId`, `POST /upload/drive/v3/files`
 
 ## Slack API

@@ -165,7 +165,71 @@ export function parseCalendarEventInputFromBody(
       conferenceEntryPoints.find((entry) => entry.entry_point_type === "video")?.uri ??
       null,
     transparency: getString(body, "transparency") ?? null,
+    start_time_zone: getString(start ?? {}, "timeZone") ?? null,
+    end_time_zone: getString(end ?? {}, "timeZone") ?? null,
+    event_type: getString(body, "eventType") ?? "default",
+    properties: pickCalendarEventProperties(body),
   };
+}
+
+// Event fields the emulator keeps as sent and returns unchanged.
+export const CALENDAR_EVENT_PROPERTY_FIELDS = [
+  "colorId",
+  "visibility",
+  "reminders",
+  "guestsCanModify",
+  "guestsCanInviteOthers",
+  "guestsCanSeeOtherGuests",
+  "anyoneCanAddSelf",
+  "extendedProperties",
+  "source",
+  "outOfOfficeProperties",
+  "focusTimeProperties",
+  "workingLocationProperties",
+] as const;
+
+function pickCalendarEventProperties(body: Record<string, unknown>): Record<string, unknown> {
+  const properties: Record<string, unknown> = {};
+  for (const field of CALENDAR_EVENT_PROPERTY_FIELDS) {
+    if (body[field] !== undefined) properties[field] = body[field];
+  }
+  return properties;
+}
+
+/**
+ * The parsed fields of an event body that the body names, for events.patch:
+ * fields it leaves out stay as they are. start and end are replaced whole,
+ * as are attendees, and each named property replaces the stored one.
+ */
+export function parseCalendarEventPatchFromBody(
+  body: Record<string, unknown>,
+): Partial<Omit<GoogleCalendarEventInput, "user_email" | "calendar_google_id">> {
+  const full = parseCalendarEventInputFromBody(body);
+  const patch: Partial<Omit<GoogleCalendarEventInput, "user_email" | "calendar_google_id">> = {};
+  const has = (key: string) => body[key] !== undefined;
+  if (has("summary")) patch.summary = full.summary;
+  if (has("description")) patch.description = full.description;
+  if (has("location")) patch.location = full.location;
+  if (has("status")) patch.status = full.status;
+  if (has("transparency")) patch.transparency = full.transparency;
+  if (has("eventType")) patch.event_type = full.event_type;
+  if (has("attendees")) patch.attendees = full.attendees;
+  if (has("conferenceData")) {
+    patch.conference_entry_points = full.conference_entry_points;
+    patch.hangout_link = full.hangout_link;
+  }
+  if (has("start")) {
+    patch.start_date_time = full.start_date_time;
+    patch.start_date = full.start_date;
+    patch.start_time_zone = full.start_time_zone;
+  }
+  if (has("end")) {
+    patch.end_date_time = full.end_date_time;
+    patch.end_date = full.end_date;
+    patch.end_time_zone = full.end_time_zone;
+  }
+  if (Object.keys(full.properties ?? {}).length > 0) patch.properties = full.properties;
+  return patch;
 }
 
 export function parseDriveItemInputFromBody(
