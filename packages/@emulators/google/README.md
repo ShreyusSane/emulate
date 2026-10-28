@@ -63,10 +63,17 @@ npm install @emulators/google
 ### Calendar
 - `GET /discovery/v1/apis/calendar/v3/rest` — public Calendar v3 REST discovery document
 - `GET /calendar/v3/users/:userId/calendarList` — list calendars
-- `GET /calendar/v3/calendars/:calendarId/events` — list events
+- `POST /calendar/v3/calendars` — create a secondary calendar
+- `GET /calendar/v3/calendars/:calendarId` — calendar metadata
+- `GET /calendar/v3/calendars/:calendarId/events` — list events (`timeMin`, `timeMax`, `q`, `eventTypes`, `timeZone`)
+- `GET /calendar/v3/calendars/:calendarId/events/:eventId` — get event
 - `POST /calendar/v3/calendars/:calendarId/events` — create event
+- `PATCH /calendar/v3/calendars/:calendarId/events/:eventId` — change the fields given
+- `PUT /calendar/v3/calendars/:calendarId/events/:eventId` — replace event
 - `DELETE /calendar/v3/calendars/:calendarId/events/:eventId` — delete event
 - `POST /calendar/v3/freeBusy` — free/busy query
+
+A `dateTime` without a UTC offset is wall-clock time in its `timeZone`, which is then required, as in the Calendar API; responses show times in the event's zone, else the calendar's (or the `timeZone` parameter). Events end after they start (`timeRangeEmpty`), keep `eventType` (`default`, `outOfOffice`, `focusTime`, `workingLocation`) with its properties, `visibility`, `colorId`, `reminders` and the `guestsCan*` flags. Free/busy answers for a coworker's address with their primary calendar and leaves out events they declined. Recurring events (`recurrence`) are rejected with `emulatorUnsupported`.
 
 ### Drive
 - `GET /drive/v3/files` — list files

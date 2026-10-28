@@ -1,3 +1,4 @@
+import { formatInTimeZone, resolveDateTime } from "./calendar-time.js";
 import { generateUid, normalizeLimit, parseOffset } from "./helpers.js";
 import type {
   GoogleCalendar,
@@ -36,6 +37,11 @@ export interface GoogleCalendarEventInput {
   conference_entry_points?: GoogleCalendarConferenceEntryPoint[];
   hangout_link?: string | null;
   transparency?: string | null;
+  start_time_zone?: string | null;
+  end_time_zone?: string | null;
+  event_type?: string;
+  organizer_email?: string;
+  properties?: Record<string, unknown>;
 }
 
 export interface ListCalendarEventsOptions {
@@ -45,6 +51,8 @@ export interface ListCalendarEventsOptions {
   pageToken?: string | null;
   q?: string | null;
   orderBy?: string | null;
+  eventTypes?: string[];
+  timeZone?: string | null;
 }
 
 export function ensureDefaultCalendars(gs: GoogleStore, userEmail: string): void {
@@ -151,6 +159,11 @@ export function createCalendarEventRecord(gs: GoogleStore, input: GoogleCalendar
     input.conference_entry_points?.find((entry) => entry.entry_point_type === "video")?.uri ??
     null;
 
+  // A dateTime without an offset is wall-clock time in its boundary's zone, or
+  // the calendar's (the API path rejects a missing zone before it gets here).
+  const startZone = input.start_time_zone ?? null;
+  const endZone = input.end_time_zone ?? startZone;
+
   return gs.calendarEvents.insert({
     google_id: eventId,
     user_email: input.user_email,
@@ -161,14 +174,32 @@ export function createCalendarEventRecord(gs: GoogleStore, input: GoogleCalendar
     location: input.location ?? null,
     html_link: buildCalendarEventLink(calendar.google_id, eventId),
     hangout_link: hangoutLink,
-    start_date_time: input.start_date_time ?? null,
+    start_date_time: input.start_date_time
+      ? resolveDateTime(input.start_date_time, startZone ?? calendar.time_zone, "start")
+      : null,
     start_date: input.start_date ?? null,
-    end_date_time: input.end_date_time ?? null,
+    end_date_time: input.end_date_time
+      ? resolveDateTime(input.end_date_time, endZone ?? calendar.time_zone, "end")
+      : null,
     end_date: input.end_date ?? null,
     attendees: input.attendees ?? [],
     conference_entry_points: input.conference_entry_points ?? [],
     transparency: input.transparency ?? null,
+    start_time_zone: startZone,
+    end_time_zone: endZone,
+    event_type: input.event_type ?? "default",
+    organizer_email: input.organizer_email ?? input.user_email,
+    properties: input.properties ?? {},
   });
+}
+
+/** Replaces the given fields of an event; times must already be resolved instants. */
+export function updateCalendarEventRecord(
+  gs: GoogleStore,
+  event: GoogleCalendarEvent,
+  changes: Partial<GoogleCalendarEvent>,
+): GoogleCalendarEvent {
+  return gs.calendarEvents.update(event.id, changes) ?? event;
 }
 
 export function getCalendarEventById(
@@ -206,6 +237,11 @@ export function listCalendarEvents(
     .filter((event) => event.calendar_google_id === calendar.google_id)
     .filter((event) => event.status !== "cancelled");
 
+  if (options.eventTypes && options.eventTypes.length > 0) {
+    const wanted = new Set(options.eventTypes);
+    events = events.filter((event) => wanted.has(event.event_type));
+  }
+
   if (options.timeMin || options.timeMax) {
     const min = options.timeMin ? Date.parse(options.timeMin) : null;
     const max = options.timeMax ? Date.parse(options.timeMax) : null;
@@ -231,8 +267,14 @@ export function listCalendarEvents(
   };
 }
 
-export function formatCalendarEventResource(gs: GoogleStore, event: GoogleCalendarEvent) {
+export function formatCalendarEventResource(
+  gs: GoogleStore,
+  event: GoogleCalendarEvent,
+  options: { timeZone?: string | null } = {},
+) {
   const calendar = getCalendarById(gs, event.user_email, event.calendar_google_id);
+  const displayZone = options.timeZone ?? calendar?.time_zone ?? "UTC";
+  const organizer = gs.users.findOneBy("email", event.organizer_email);
 
   return {
     kind: "calendar#event",
@@ -246,15 +288,27 @@ export function formatCalendarEventResource(gs: GoogleStore, event: GoogleCalend
     location: event.location ?? undefined,
     created: event.created_at,
     updated: event.updated_at,
-    start: formatCalendarDateRange(event, "start", calendar?.time_zone ?? "UTC"),
-    end: formatCalendarDateRange(event, "end", calendar?.time_zone ?? "UTC"),
-    attendees: event.attendees.map((attendee) => ({
-      email: attendee.email,
-      displayName: attendee.display_name ?? undefined,
-      responseStatus: attendee.response_status ?? undefined,
-      organizer: attendee.organizer || undefined,
-      self: attendee.self || undefined,
-    })),
+    ...event.properties,
+    eventType: event.event_type,
+    transparency: event.transparency ?? undefined,
+    creator: { email: event.organizer_email, self: event.organizer_email === event.user_email || undefined },
+    organizer: {
+      email: event.organizer_email,
+      displayName: organizer?.name ?? undefined,
+      self: event.organizer_email === event.user_email || undefined,
+    },
+    start: formatCalendarDateRange(event, "start", displayZone),
+    end: formatCalendarDateRange(event, "end", displayZone),
+    attendees:
+      event.attendees.length > 0
+        ? event.attendees.map((attendee) => ({
+            email: attendee.email,
+            displayName: attendee.display_name ?? undefined,
+            responseStatus: attendee.response_status ?? "needsAction",
+            organizer: attendee.organizer || attendee.email === event.organizer_email || undefined,
+            self: attendee.self || attendee.email === event.user_email || undefined,
+          }))
+        : undefined,
     conferenceData:
       event.conference_entry_points.length > 0
         ? {
@@ -277,18 +331,34 @@ export function buildFreeBusyResponse(
     items: Array<{ id: string }>;
   },
 ) {
-  const calendars: Record<string, { busy: Array<{ start: string; end: string }> }> = {};
+  const calendars: Record<
+    string,
+    { busy: Array<{ start: string; end: string }>; errors?: Array<{ domain: string; reason: string }> }
+  > = {};
   const min = Date.parse(request.timeMin);
   const max = Date.parse(request.timeMax);
 
   for (const item of request.items) {
-    const calendar = getCalendarById(gs, userEmail, item.id);
-    if (!calendar) continue;
+    // A calendar of the caller's, or a coworker's primary calendar by their
+    // address: free/busy is visible within a domain by default.
+    let owner = userEmail;
+    let calendar = getCalendarById(gs, userEmail, item.id);
+    if (!calendar && gs.users.findOneBy("email", item.id)) {
+      owner = item.id;
+      calendar = getCalendarById(gs, owner, "primary");
+    }
+    if (!calendar) {
+      calendars[item.id] = { busy: [], errors: [{ domain: "global", reason: "notFound" }] };
+      continue;
+    }
+    const calendarId = calendar.google_id;
 
     const busy = gs.calendarEvents
-      .findBy("user_email", userEmail)
-      .filter((event) => event.calendar_google_id === calendar.google_id)
+      .findBy("user_email", owner)
+      .filter((event) => event.calendar_google_id === calendarId)
       .filter((event) => event.status !== "cancelled" && event.transparency !== "transparent")
+      .filter((event) => event.event_type !== "workingLocation")
+      .filter((event) => !declinedBy(event, owner))
       .filter((event) => eventOverlapsRange(event, min, max))
       .sort((a, b) => getEventSortTime(a) - getEventSortTime(b))
       .map((event) => ({
@@ -311,20 +381,28 @@ function buildCalendarEventLink(calendarId: string, eventId: string): string {
   return `https://calendar.google.com/calendar/u/0/r/eventedit/${calendarId}/${eventId}`;
 }
 
-function formatCalendarDateRange(event: GoogleCalendarEvent, prefix: "start" | "end", timeZone: string) {
+// A declined invitation does not make its attendee busy.
+function declinedBy(event: GoogleCalendarEvent, email: string): boolean {
+  return event.attendees.some((attendee) => attendee.email === email && attendee.response_status === "declined");
+}
+
+// A dateTime shows in the zone it was written in, else the response's zone; the
+// timeZone field appears only when the event names one, as in the Calendar API.
+function formatCalendarDateRange(event: GoogleCalendarEvent, prefix: "start" | "end", displayZone: string) {
   const dateTime = prefix === "start" ? event.start_date_time : event.end_date_time;
   const date = prefix === "start" ? event.start_date : event.end_date;
+  const ownZone = prefix === "start" ? event.start_time_zone : event.end_time_zone;
 
   if (dateTime) {
     return {
-      dateTime,
-      timeZone,
+      dateTime: formatInTimeZone(dateTime, ownZone ?? displayZone),
+      timeZone: ownZone ?? undefined,
     };
   }
 
   return {
     date: date ?? undefined,
-    timeZone,
+    timeZone: ownZone ?? undefined,
   };
 }
 

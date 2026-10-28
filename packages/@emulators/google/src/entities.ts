@@ -147,6 +147,15 @@ export interface GoogleCalendarEvent extends Entity {
   attendees: GoogleCalendarEventAttendee[];
   conference_entry_points: GoogleCalendarConferenceEntryPoint[];
   transparency: string | null;
+  // The zone each boundary was written in; null shows it in the calendar's zone.
+  start_time_zone: string | null;
+  end_time_zone: string | null;
+  // default, outOfOffice, focusTime or workingLocation.
+  event_type: string;
+  organizer_email: string;
+  // Event fields kept as the client sent them and returned as-is: reminders,
+  // colorId, visibility, the guestsCan* flags, the eventType properties.
+  properties: Record<string, unknown>;
 }
 
 export interface GoogleDriveItem extends Entity {

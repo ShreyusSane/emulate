@@ -92,9 +92,18 @@ export interface GoogleSeedCalendarEvent {
   start_date?: string;
   end_date_time?: string;
   end_date?: string;
+  /** Zone of an offsetless start/end; defaults to the calendar's. */
+  time_zone?: string;
+  event_type?: string;
+  /** Who organized it; defaults to the calendar's owner. */
+  organizer?: string;
+  transparency?: string;
+  /** Other event fields, as in the API (visibility, reminders, outOfOfficeProperties). */
+  properties?: Record<string, unknown>;
   attendees?: Array<{
     email: string;
     display_name?: string;
+    response_status?: string;
   }>;
   conference_entry_points?: Array<{
     entry_point_type: string;
@@ -458,11 +467,17 @@ function seedCalendarEvents(store: Store, events: GoogleSeedCalendarEvent[], fal
       start_date: event.start_date ?? null,
       end_date_time: event.end_date_time ?? null,
       end_date: event.end_date ?? null,
+      start_time_zone: event.time_zone ?? null,
+      end_time_zone: event.time_zone ?? null,
+      event_type: event.event_type ?? "default",
+      organizer_email: event.organizer ?? userEmail,
+      transparency: event.transparency ?? null,
+      properties: event.properties ?? {},
       attendees: (event.attendees ?? []).map((attendee) => ({
         email: attendee.email,
         display_name: attendee.display_name ?? null,
-        response_status: null,
-        organizer: false,
+        response_status: attendee.response_status ?? null,
+        organizer: attendee.email === (event.organizer ?? userEmail),
         self: attendee.email === userEmail,
       })),
       conference_entry_points: (event.conference_entry_points ?? []).map((entry) => ({
